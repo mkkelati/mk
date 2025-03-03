@@ -1,0 +1,581 @@
+#!/bin/bash
+clear
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+PURPLE='\033[1;35m'
+CYAN='\033[1;36m'
+WHITE='\033[1;37m'
+CORTITLE='\033[1;41m'
+SCOLOR='\033[0m'
+banner='
+ __     ______  _____                
+ \ \   / /___ \|  __ \     /\        
+  \ \ / /  __) | |__) |   /  \       
+   \ V /  |__ <|  _  /   / /\ \      
+    \ /   ___) | | \ \  / ____ \     
+     V   |____/|_|  \_\/_/    \_\    '
+
+echo -e "${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+echo -e "${CORTITLE}🐉ㅤDRAGON VPS MANAGER V2RAY MANAGERㅤ🐉${SCOLOR}"
+echo -e "${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+echo -e "${RED}$banner${SCOLOR}"
+
+# Function to check if running as root
+check_root() {
+    if [ "$(id -u)" != "0" ]; then
+        echo -e "\n${RED}ERROR: THIS SCRIPT NEEDS TO BE RUN AS ROOT!${SCOLOR}"
+        echo -e "${YELLOW}Use 'sudo -i' before running the script.${SCOLOR}\n"
+        exit 1
+    fi
+}
+
+# Function to check if required packages are installed
+check_dependencies() {
+    echo -e "\n${YELLOW}Checking dependencies...${SCOLOR}"
+    
+    local dependencies=("curl" "socat" "unzip" "jq" "qrencode" "openssl" "cron")
+    local missing_deps=()
+    
+    for dep in "${dependencies[@]}"; do
+        if ! dpkg -s "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo -e "${YELLOW}Installing missing dependencies: ${missing_deps[*]}${SCOLOR}"
+        apt-get update -y > /dev/null 2>&1
+        apt-get install -y "${missing_deps[@]}" > /dev/null 2>&1
+        
+        # Check if installation was successful
+        for dep in "${missing_deps[@]}"; do
+            if ! dpkg -s "$dep" &> /dev/null; then
+                echo -e "${RED}Failed to install $dep. Please install it manually.${SCOLOR}"
+                exit 1
+            fi
+        done
+        echo -e "${GREEN}All dependencies installed successfully.${SCOLOR}"
+    else
+        echo -e "${GREEN}All dependencies are already installed.${SCOLOR}"
+    fi
+}
+
+# Function to download and install V2Ray
+install_v2ray() {
+    echo -e "\n${YELLOW}Installing V2Ray...${SCOLOR}"
+    
+    # Create directory for V2Ray if it doesn't exist
+    mkdir -p /etc/v2ray
+    
+    # Check if V2Ray is already installed
+    if [ -f "/usr/local/bin/v2ray" ]; then
+        echo -e "${GREEN}V2Ray is already installed.${SCOLOR}"
+        return 0
+    fi
+    
+    # Download and install V2Ray
+    echo -e "${YELLOW}Downloading V2Ray installer...${SCOLOR}"
+    curl -L -s https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh > /tmp/install-v2ray.sh
+    
+    if [ ! -f "/tmp/install-v2ray.sh" ]; then
+        echo -e "${RED}Failed to download V2Ray installer. Please check your internet connection.${SCOLOR}"
+        exit 1
+    fi
+    
+    # Make the installer executable and run it
+    chmod +x /tmp/install-v2ray.sh
+    echo -e "${YELLOW}Running V2Ray installer...${SCOLOR}"
+    bash /tmp/install-v2ray.sh
+    
+    # Check if installation was successful
+    if [ ! -f "/usr/local/bin/v2ray" ]; then
+        echo -e "${RED}Failed to install V2Ray. Please try again.${SCOLOR}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}V2Ray installed successfully.${SCOLOR}"
+    
+    # Install V2Ray for Nginx
+    echo -e "${YELLOW}Installing V2Ray for Nginx...${SCOLOR}"
+    if ! dpkg -s "nginx" &> /dev/null; then
+        apt-get install -y nginx > /dev/null 2>&1
+    fi
+    
+    # Enable and start Nginx
+    systemctl enable nginx
+    systemctl start nginx
+    
+    echo -e "${GREEN}Nginx installed and started successfully.${SCOLOR}"
+}
+
+# Function to generate UUID
+generate_uuid() {
+    echo $(cat /proc/sys/kernel/random/uuid)
+}
+
+# Function to generate a random port
+generate_port() {
+    echo $(shuf -i 10000-65000 -n 1)
+}
+
+# Function to configure VLESS
+configure_vless() {
+    echo -e "\n${YELLOW}Configuring VLESS...${SCOLOR}"
+    
+    # Generate UUID and port
+    UUID=$(generate_uuid)
+    PORT=$(generate_port)
+    
+    # Create VLESS configuration
+    cat > /etc/v2ray/vless.json << EOF
+{
+  "inbounds": [{
+    "port": $PORT,
+    "protocol": "vless",
+    "settings": {
+      "decryption": "none",
+      "clients": [
+        {
+          "id": "$UUID",
+          "level": 0
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "ws",
+      "wsSettings": {
+        "path": "/vless"
+      }
+    }
+  }],
+  "outbounds": [{
+    "protocol": "freedom",
+    "settings": {}
+  }]
+}
+EOF
+    
+    # Create systemd service for VLESS
+    cat > /etc/systemd/system/v2ray-vless.service << EOF
+[Unit]
+Description=V2Ray VLESS Service
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/v2ray run -config /etc/v2ray/vless.json
+Restart=on-failure
+RestartPreventExitStatus=23
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # Configure Nginx for VLESS
+    cat > /etc/nginx/conf.d/vless.conf << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    
+    location /vless {
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+    }
+}
+EOF
+    
+    # Reload systemd and enable the service
+    systemctl daemon-reload
+    systemctl enable v2ray-vless.service
+    
+    # Restart Nginx
+    systemctl restart nginx
+    
+    # Save configuration details
+    echo "$UUID" > /etc/v2ray/vless_uuid
+    echo "$PORT" > /etc/v2ray/vless_port
+    
+    echo -e "${GREEN}VLESS configured successfully.${SCOLOR}"
+    
+    # Display VLESS information
+    SERVER_IP=$(curl -s ifconfig.me)
+    echo -e "\n${YELLOW}VLESS Information:${SCOLOR}"
+    echo -e "${CYAN}Protocol:${SCOLOR} VLESS"
+    echo -e "${CYAN}UUID:${SCOLOR} $UUID"
+    echo -e "${CYAN}Port:${SCOLOR} 80"
+    echo -e "${CYAN}Path:${SCOLOR} /vless"
+    echo -e "${CYAN}Server:${SCOLOR} $SERVER_IP"
+    
+    # Generate VLESS QR code
+    VLESS_URL="vless://$UUID@$SERVER_IP:80?path=%2Fvless&security=none&encryption=none&type=ws#DRAGON-VLESS"
+    echo -e "\n${YELLOW}VLESS URL:${SCOLOR} $VLESS_URL"
+    
+    echo -e "\n${YELLOW}VLESS QR Code:${SCOLOR}"
+    qrencode -t ANSIUTF8 "$VLESS_URL"
+}
+
+# Function to configure VMess
+configure_vmess() {
+    echo -e "\n${YELLOW}Configuring VMess...${SCOLOR}"
+    
+    # Generate UUID and port
+    UUID=$(generate_uuid)
+    PORT=$(generate_port)
+    
+    # Create VMess configuration
+    cat > /etc/v2ray/vmess.json << EOF
+{
+  "inbounds": [{
+    "port": $PORT,
+    "protocol": "vmess",
+    "settings": {
+      "clients": [
+        {
+          "id": "$UUID",
+          "alterId": 0,
+          "level": 0
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "ws",
+      "wsSettings": {
+        "path": "/vmess"
+      }
+    }
+  }],
+  "outbounds": [{
+    "protocol": "freedom",
+    "settings": {}
+  }]
+}
+EOF
+    
+    # Create systemd service for VMess
+    cat > /etc/systemd/system/v2ray-vmess.service << EOF
+[Unit]
+Description=V2Ray VMess Service
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/v2ray run -config /etc/v2ray/vmess.json
+Restart=on-failure
+RestartPreventExitStatus=23
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # Configure Nginx for VMess
+    cat > /etc/nginx/conf.d/vmess.conf << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    
+    location /vmess {
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+    }
+}
+EOF
+    
+    # Reload systemd and enable the service
+    systemctl daemon-reload
+    systemctl enable v2ray-vmess.service
+    
+    # Restart Nginx
+    systemctl restart nginx
+    
+    # Save configuration details
+    echo "$UUID" > /etc/v2ray/vmess_uuid
+    echo "$PORT" > /etc/v2ray/vmess_port
+    
+    echo -e "${GREEN}VMess configured successfully.${SCOLOR}"
+    
+    # Display VMess information
+    SERVER_IP=$(curl -s ifconfig.me)
+    echo -e "\n${YELLOW}VMess Information:${SCOLOR}"
+    echo -e "${CYAN}Protocol:${SCOLOR} VMess"
+    echo -e "${CYAN}UUID:${SCOLOR} $UUID"
+    echo -e "${CYAN}Port:${SCOLOR} 80"
+    echo -e "${CYAN}Path:${SCOLOR} /vmess"
+    echo -e "${CYAN}AlterID:${SCOLOR} 0"
+    echo -e "${CYAN}Server:${SCOLOR} $SERVER_IP"
+    
+    # Generate VMess QR code
+    VMESS_CONFIG="{\"v\":\"2\",\"ps\":\"DRAGON-VMESS\",\"add\":\"$SERVER_IP\",\"port\":\"80\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"\",\"path\":\"/vmess\",\"tls\":\"\"}"
+    VMESS_URL="vmess://$(echo $VMESS_CONFIG | base64 -w 0)"
+    echo -e "\n${YELLOW}VMess URL:${SCOLOR} $VMESS_URL"
+    
+    echo -e "\n${YELLOW}VMess QR Code:${SCOLOR}"
+    qrencode -t ANSIUTF8 "$VMESS_URL"
+}
+
+# Function to start V2Ray services
+start_v2ray() {
+    echo -e "\n${YELLOW}Starting V2Ray services...${SCOLOR}"
+    
+    # Start VLESS service if configured
+    if [ -f "/etc/systemd/system/v2ray-vless.service" ]; then
+        systemctl start v2ray-vless.service
+        if systemctl is-active --quiet v2ray-vless.service; then
+            echo -e "${GREEN}VLESS service started successfully.${SCOLOR}"
+        else
+            echo -e "${RED}Failed to start VLESS service. Check logs with 'journalctl -u v2ray-vless.service'.${SCOLOR}"
+        fi
+    fi
+    
+    # Start VMess service if configured
+    if [ -f "/etc/systemd/system/v2ray-vmess.service" ]; then
+        systemctl start v2ray-vmess.service
+        if systemctl is-active --quiet v2ray-vmess.service; then
+            echo -e "${GREEN}VMess service started successfully.${SCOLOR}"
+        else
+            echo -e "${RED}Failed to start VMess service. Check logs with 'journalctl -u v2ray-vmess.service'.${SCOLOR}"
+        fi
+    fi
+}
+
+# Function to stop V2Ray services
+stop_v2ray() {
+    echo -e "\n${YELLOW}Stopping V2Ray services...${SCOLOR}"
+    
+    # Stop VLESS service if configured
+    if [ -f "/etc/systemd/system/v2ray-vless.service" ]; then
+        systemctl stop v2ray-vless.service
+        echo -e "${YELLOW}VLESS service stopped.${SCOLOR}"
+    fi
+    
+    # Stop VMess service if configured
+    if [ -f "/etc/systemd/system/v2ray-vmess.service" ]; then
+        systemctl stop v2ray-vmess.service
+        echo -e "${YELLOW}VMess service stopped.${SCOLOR}"
+    fi
+}
+
+# Function to restart V2Ray services
+restart_v2ray() {
+    echo -e "\n${YELLOW}Restarting V2Ray services...${SCOLOR}"
+    
+    # Restart VLESS service if configured
+    if [ -f "/etc/systemd/system/v2ray-vless.service" ]; then
+        systemctl restart v2ray-vless.service
+        if systemctl is-active --quiet v2ray-vless.service; then
+            echo -e "${GREEN}VLESS service restarted successfully.${SCOLOR}"
+        else
+            echo -e "${RED}Failed to restart VLESS service. Check logs with 'journalctl -u v2ray-vless.service'.${SCOLOR}"
+        fi
+    fi
+    
+    # Restart VMess service if configured
+    if [ -f "/etc/systemd/system/v2ray-vmess.service" ]; then
+        systemctl restart v2ray-vmess.service
+        if systemctl is-active --quiet v2ray-vmess.service; then
+            echo -e "${GREEN}VMess service restarted successfully.${SCOLOR}"
+        else
+            echo -e "${RED}Failed to restart VMess service. Check logs with 'journalctl -u v2ray-vmess.service'.${SCOLOR}"
+        fi
+    fi
+}
+
+# Function to show V2Ray information
+show_v2ray_info() {
+    echo -e "\n${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+    echo -e "${YELLOW}V2Ray Information:${SCOLOR}"
+    
+    # Show VLESS information if configured
+    if [ -f "/etc/v2ray/vless_uuid" ] && [ -f "/etc/v2ray/vless_port" ]; then
+        UUID=$(cat /etc/v2ray/vless_uuid)
+        PORT=$(cat /etc/v2ray/vless_port)
+        SERVER_IP=$(curl -s ifconfig.me)
+        
+        echo -e "\n${CYAN}VLESS Information:${SCOLOR}"
+        echo -e "${CYAN}Protocol:${SCOLOR} VLESS"
+        echo -e "${CYAN}UUID:${SCOLOR} $UUID"
+        echo -e "${CYAN}Port:${SCOLOR} 80"
+        echo -e "${CYAN}Path:${SCOLOR} /vless"
+        echo -e "${CYAN}Server:${SCOLOR} $SERVER_IP"
+        echo -e "${CYAN}Status:${SCOLOR} $(systemctl is-active v2ray-vless.service)"
+        
+        # Generate VLESS URL
+        VLESS_URL="vless://$UUID@$SERVER_IP:80?path=%2Fvless&security=none&encryption=none&type=ws#DRAGON-VLESS"
+        echo -e "\n${YELLOW}VLESS URL:${SCOLOR} $VLESS_URL"
+        
+        echo -e "\n${YELLOW}VLESS QR Code:${SCOLOR}"
+        qrencode -t ANSIUTF8 "$VLESS_URL"
+    else
+        echo -e "\n${YELLOW}VLESS is not configured.${SCOLOR}"
+    fi
+    
+    # Show VMess information if configured
+    if [ -f "/etc/v2ray/vmess_uuid" ] && [ -f "/etc/v2ray/vmess_port" ]; then
+        UUID=$(cat /etc/v2ray/vmess_uuid)
+        PORT=$(cat /etc/v2ray/vmess_port)
+        SERVER_IP=$(curl -s ifconfig.me)
+        
+        echo -e "\n${CYAN}VMess Information:${SCOLOR}"
+        echo -e "${CYAN}Protocol:${SCOLOR} VMess"
+        echo -e "${CYAN}UUID:${SCOLOR} $UUID"
+        echo -e "${CYAN}Port:${SCOLOR} 80"
+        echo -e "${CYAN}Path:${SCOLOR} /vmess"
+        echo -e "${CYAN}AlterID:${SCOLOR} 0"
+        echo -e "${CYAN}Server:${SCOLOR} $SERVER_IP"
+        echo -e "${CYAN}Status:${SCOLOR} $(systemctl is-active v2ray-vmess.service)"
+        
+        # Generate VMess URL
+        VMESS_CONFIG="{\"v\":\"2\",\"ps\":\"DRAGON-VMESS\",\"add\":\"$SERVER_IP\",\"port\":\"80\",\"id\":\"$UUID\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"\",\"path\":\"/vmess\",\"tls\":\"\"}"
+        VMESS_URL="vmess://$(echo $VMESS_CONFIG | base64 -w 0)"
+        echo -e "\n${YELLOW}VMess URL:${SCOLOR} $VMESS_URL"
+        
+        echo -e "\n${YELLOW}VMess QR Code:${SCOLOR}"
+        qrencode -t ANSIUTF8 "$VMESS_URL"
+    else
+        echo -e "\n${YELLOW}VMess is not configured.${SCOLOR}"
+    fi
+    
+    echo -e "${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+    
+    echo -e "\n${YELLOW}Instructions for Client:${SCOLOR}"
+    echo -e "${WHITE}1. Download V2Ray client (V2RayN for Windows, V2RayNG for Android, etc.)${SCOLOR}"
+    echo -e "${WHITE}2. Scan the QR code or import the URL manually.${SCOLOR}"
+    echo -e "${WHITE}3. Connect using the imported configuration.${SCOLOR}"
+}
+
+# Function to uninstall V2Ray
+uninstall_v2ray() {
+    echo -e "\n${YELLOW}Uninstalling V2Ray...${SCOLOR}"
+    
+    # Stop and disable services
+    systemctl stop v2ray-vless.service 2>/dev/null
+    systemctl stop v2ray-vmess.service 2>/dev/null
+    systemctl disable v2ray-vless.service 2>/dev/null
+    systemctl disable v2ray-vmess.service 2>/dev/null
+    
+    # Remove service files
+    rm -f /etc/systemd/system/v2ray-vless.service
+    rm -f /etc/systemd/system/v2ray-vmess.service
+    
+    # Remove Nginx configuration
+    rm -f /etc/nginx/conf.d/vless.conf
+    rm -f /etc/nginx/conf.d/vmess.conf
+    
+    # Restart Nginx
+    systemctl restart nginx
+    
+    # Download and run V2Ray uninstaller
+    curl -L -s https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh > /tmp/uninstall-v2ray.sh
+    chmod +x /tmp/uninstall-v2ray.sh
+    bash /tmp/uninstall-v2ray.sh --remove
+    
+    # Remove V2Ray configuration files
+    rm -rf /etc/v2ray
+    
+    echo -e "${GREEN}V2Ray uninstalled successfully.${SCOLOR}"
+}
+
+# Main menu function
+main_menu() {
+    clear
+    echo -e "${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+    echo -e "${CORTITLE}🐉ㅤDRAGON VPS MANAGER V2RAY MANAGERㅤ🐉${SCOLOR}"
+    echo -e "${CORTITLE}◇───────────────────────────────────────────────◇${SCOLOR}" 
+    echo -e "${RED}$banner${SCOLOR}"
+    
+    echo -e "\n${CYAN}Select an option:${SCOLOR}"
+    echo -e "${WHITE}1.${SCOLOR} ${YELLOW}Install V2Ray${SCOLOR}"
+    echo -e "${WHITE}2.${SCOLOR} ${YELLOW}Configure VLESS${SCOLOR}"
+    echo -e "${WHITE}3.${SCOLOR} ${YELLOW}Configure VMess${SCOLOR}"
+    echo -e "${WHITE}4.${SCOLOR} ${YELLOW}Start V2Ray Services${SCOLOR}"
+    echo -e "${WHITE}5.${SCOLOR} ${YELLOW}Stop V2Ray Services${SCOLOR}"
+    echo -e "${WHITE}6.${SCOLOR} ${YELLOW}Restart V2Ray Services${SCOLOR}"
+    echo -e "${WHITE}7.${SCOLOR} ${YELLOW}Show V2Ray Information${SCOLOR}"
+    echo -e "${WHITE}8.${SCOLOR} ${YELLOW}Uninstall V2Ray${SCOLOR}"
+    echo -e "${WHITE}0.${SCOLOR} ${YELLOW}Exit${SCOLOR}"
+    
+    echo -e "\n${CYAN}Enter your choice:${SCOLOR}"
+    read -p "Option: " option
+    
+    case $option in
+        1)
+            check_root
+            check_dependencies
+            install_v2ray
+            ;;
+        2)
+            check_root
+            if [ ! -f "/usr/local/bin/v2ray" ]; then
+                echo -e "\n${RED}V2Ray is not installed. Please install it first.${SCOLOR}"
+            else
+                configure_vless
+                start_v2ray
+            fi
+            ;;
+        3)
+            check_root
+            if [ ! -f "/usr/local/bin/v2ray" ]; then
+                echo -e "\n${RED}V2Ray is not installed. Please install it first.${SCOLOR}"
+            else
+                configure_vmess
+                start_v2ray
+            fi
+            ;;
+        4)
+            check_root
+            start_v2ray
+            ;;
+        5)
+            check_root
+            stop_v2ray
+            ;;
+        6)
+            check_root
+            restart_v2ray
+            ;;
+        7)
+            show_v2ray_info
+            ;;
+        8)
+            check_root
+            echo -e "\n${RED}WARNING: This will completely remove V2Ray and all configurations.${SCOLOR}"
+            read -p "Are you sure you want to continue? (y/n): " confirm
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                uninstall_v2ray
+            else
+                echo -e "\n${YELLOW}Uninstallation cancelled.${SCOLOR}"
+            fi
+            ;;
+        0)
+            echo -e "\n${YELLOW}Exiting...${SCOLOR}"
+            exit 0
+            ;;
+        *)
+            echo -e "\n${RED}Invalid option. Please try again.${SCOLOR}"
+            ;;
+    esac
+    
+    echo -e "\n${CYAN}Press Enter to return to the main menu...${SCOLOR}"
+    read
+    main_menu
+}
+
+# Start the main menu
+main_menu 
