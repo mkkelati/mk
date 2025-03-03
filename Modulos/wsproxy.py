@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # encoding: utf-8
-import socket, threading, thread, select, signal, sys, time, getopt, os
+import socket, threading, select, signal, sys, time, getopt, os
 
 # Default configuration
 PASS = ''
