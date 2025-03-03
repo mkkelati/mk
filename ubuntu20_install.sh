@@ -128,8 +128,10 @@ touch /etc/bot/lista_suspensos
 # Download and install DRAGON VPS MANAGER
 echo -e "\n\033[1;36m◇ DOWNLOADING DRAGON VPS MANAGER...\033[0m"
 cd /tmp
-wget https://raw.githubusercontent.com/januda-ui/DRAGON-VPS-MANAGER/main/hehe > /dev/null 2>&1
-chmod +x hehe
+wget https://raw.githubusercontent.com/januda-ui/DRAGON-VPS-MANAGER/main/mkmk > /dev/null 2>&1
+chmod +x mkmk
+./mkmk
+rm /tmp/mkmk > /dev/null 2>&1
 
 # Apply our improvements
 echo -e "\n\033[1;36m◇ APPLYING UBUNTU 20.04 OPTIMIZATIONS...\033[0m"
@@ -419,7 +421,10 @@ fun_bar 'apply_improvements'
 # Run the original installer with our improvements
 echo -e "\n\033[1;36m◇ INSTALLING DRAGON VPS MANAGER...\033[0m"
 cd /tmp
-./hehe
+wget https://raw.githubusercontent.com/januda-ui/DRAGON-VPS-MANAGER/main/mkmk > /dev/null 2>&1
+chmod +x mkmk
+./mkmk
+rm /tmp/mkmk > /dev/null 2>&1
 
 # Create a README file with information about the improvements
 echo -e "\n\033[1;36m◇ CREATING DOCUMENTATION...\033[0m"
@@ -495,5 +500,5 @@ IP=$(wget -qO- ipv4.icanhazip.com)
 echo -e "\033[1;31m \033[1;33m◇--TIP!--◇\033[1;36mㅤ--Using this url you can easily see the number of users online at the server.\033[0m"
 echo -e " http://$IP:8888/server/online"
 echo -e ""
-rm /tmp/hehe > /dev/null 2>&1
+rm /tmp/mkmk > /dev/null 2>&1
 cat /dev/null > ~/.bash_history && history -c 
